@@ -16,6 +16,7 @@ import org.semanticweb.owlapi.reasoner.structural.StructuralReasonerFactory;
 import org.semanticweb.owlapi.search.EntitySearcher;
 import org.semanticweb.owlapi.util.AutoIRIMapper;
 import org.semanticweb.owlapi.util.InferredSubClassAxiomGenerator;
+import org.semanticweb.owlapi.util.OWLClassExpressionVisitorAdapter;
 import org.semanticweb.owlapi.util.SimpleIRIMapper;
 import org.semanticweb.owlapi.vocab.OWLRDFVocabulary;
 import org.slf4j.Logger;
@@ -252,7 +253,8 @@ public class OntologyParser {
 			IRI documentIRI = sourceOwlManager.getOntologyDocumentIRI(sourceOnt);
 
 			addGroundMetadata(documentIRI, fact, sourceOnt);
-			generateGroundTriplesForAxioms(allAxioms, fact, sourceOnt);
+			generateTreeViewEdges(allAxioms, fact, sourceOnt);
+			generateRelationshipTriples(allAxioms, fact, sourceOnt);
 
 			if (isOBO) {
 				if (!documentIRI.toString().startsWith("owlapi:ontology")) {
@@ -376,6 +378,18 @@ public class OntologyParser {
 		}
 	}
 
+	/**
+	 * Generates identifier annotations for named classes in OWL ontologies.
+	 * <p>
+	 * Existing {@code skos:notation} annotations are preserved. If absent, {@code oboInOwl:id}
+	 * is copied into {@code skos:notation}. Otherwise, BioPortal {@code prefixIRI} metadata is
+	 * generated from the class IRI, using a prefixed form when available and the IRI short form
+	 * as a fallback.
+	 *
+	 * @param allAxioms the set of axioms being accumulated for the target ontology
+	 * @param fact the OWL data factory used to create annotation axioms
+	 * @param sourceOnt the source ontology whose class identifiers are being processed
+	 */
 	private void generateSKOSInOwl(Set<OWLAxiom> allAxioms, OWLDataFactory fact, OWLOntology sourceOnt) {
 		OWLDocumentFormat docFormat = this.sourceOwlManager.getOntologyFormat(sourceOnt);
 		PrefixDocumentFormat prefixFormat = docFormat.asPrefixOWLOntologyFormat();
@@ -424,11 +438,12 @@ public class OntologyParser {
 						b.replace(ind, ind + 1, ":");
 						prefixIRI = b.toString();
 					}
-
-					OWLAnnotationProperty prop = fact.getOWLAnnotationProperty(IRI.create("http://data.bioontology.org/metadata/prefixIRI"));
-					OWLAxiom annAsse = fact.getOWLAnnotationAssertionAxiom(prop, cls.getIRI(), fact.getOWLLiteral(prefixIRI));
-					allAxioms.add(annAsse);
+				} else {
+					prefixIRI = cls.getIRI().getShortForm();
 				}
+				OWLAnnotationProperty prop = fact.getOWLAnnotationProperty(IRI.create("http://data.bioontology.org/metadata/prefixIRI"));
+				OWLAxiom annAsse = fact.getOWLAnnotationAssertionAxiom(prop, cls.getIRI(), fact.getOWLLiteral(prefixIRI));
+				allAxioms.add(annAsse);
 			}
 		}
 	}
@@ -488,7 +503,9 @@ public class OntologyParser {
 		}
 	}
 
-	private void generateGroundTriplesForAxioms(Set<OWLAxiom> allAxioms, OWLDataFactory fact, OWLOntology sourceOnt) {
+	private void generateTreeViewEdges(Set<OWLAxiom> allAxioms, OWLDataFactory fact, OWLOntology sourceOnt) {
+
+		OWLAnnotationProperty treeView = fact.getOWLAnnotationProperty(IRI.create("http://data.bioontology.org/metadata/treeView"));
 
 		for (OWLAxiom axiom : sourceOnt.getAxioms()) {
 			allAxioms.add(axiom);
@@ -507,50 +524,148 @@ public class OntologyParser {
 
 					if (!some.getProperty().isAnonymous() && !some.getFiller().isAnonymous()) {
 						String propSome = some.getProperty().asOWLObjectProperty().getIRI().toString().toLowerCase();
+						IRI subClass = sc.getSubClass().asOWLClass().getIRI();
+						IRI filler = some.getFiller().asOWLClass().getIRI();
 
-						if (propSome.contains("obo")) {
-
-							if (propSome.endsWith("part_of")
-									|| propSome.endsWith("bfo_0000050")
-									|| propSome.endsWith("contains")
-									|| propSome.endsWith("ro_0001019")
-									|| propSome.endsWith("develops_from")
-									|| propSome.endsWith("ro_0002202")) {
-
-								OWLAnnotationProperty prop = null;
-								if (propSome.endsWith("contains") || propSome.endsWith("ro_0001019")) {
-									prop = fact.getOWLAnnotationProperty(IRI.create("http://data.bioontology.org/metadata/obo/contains"));
-									OWLAxiom annAsse = fact.getOWLAnnotationAssertionAxiom(prop, some.getFiller().asOWLClass().getIRI(), sc.getSubClass().asOWLClass().getIRI());
-									allAxioms.add(annAsse);
-
-									prop = fact.getOWLAnnotationProperty(IRI.create("http://data.bioontology.org/metadata/treeView"));
-									annAsse = fact.getOWLAnnotationAssertionAxiom(prop, some.getFiller().asOWLClass().getIRI(), sc.getSubClass().asOWLClass().getIRI());
-									allAxioms.add(annAsse);
-								} else {
-									if (propSome.endsWith("part_of") || propSome.endsWith("bfo_0000050"))
-										prop = fact.getOWLAnnotationProperty(IRI.create("http://data.bioontology.org/metadata/obo/part_of"));
-									else {
-										prop = fact.getOWLAnnotationProperty(IRI.create("http://data.bioontology.org/metadata/obo/develops_from"));
-									}
-
-									OWLAxiom annAsse = fact.getOWLAnnotationAssertionAxiom(prop, sc.getSubClass().asOWLClass().getIRI(), some.getFiller().asOWLClass().getIRI());
-									allAxioms.add(annAsse);
-
-									prop = fact.getOWLAnnotationProperty(IRI.create("http://data.bioontology.org/metadata/treeView"));
-									annAsse = fact.getOWLAnnotationAssertionAxiom(prop, sc.getSubClass().asOWLClass().getIRI(), some.getFiller().asOWLClass().getIRI());
-									allAxioms.add(annAsse);
-								}
-							} else {
-								if (!some.getFiller().isAnonymous() && !sc.getSubClass().isAnonymous()) {
-									OWLAnnotationProperty prop = fact.getOWLAnnotationProperty(some.getProperty().asOWLObjectProperty().getIRI());
-									OWLAxiom annAsse = fact.getOWLAnnotationAssertionAxiom(prop, sc.getSubClass().asOWLClass().getIRI(), some.getFiller().asOWLClass().getIRI());
-									allAxioms.add(annAsse);
-								}
-							}
+						// The OBO hierarchy is built from treeView edges. part_of/develops_from
+						// (and their IRIs) contribute an edge subclass -> filler; contains points
+						// the other way, filler -> subclass. The relationships themselves are
+						// emitted, for every property, by generateRelationshipTriples.
+						if (propSome.endsWith("part_of")
+								|| propSome.endsWith("bfo_0000050")
+								|| propSome.endsWith("develops_from")
+								|| propSome.endsWith("ro_0002202")) {
+							allAxioms.add(fact.getOWLAnnotationAssertionAxiom(treeView, subClass, filler));
+						} else if (propSome.endsWith("contains") || propSome.endsWith("ro_0001019")) {
+							allAxioms.add(fact.getOWLAnnotationAssertionAxiom(treeView, filler, subClass));
 						}
 					}
 				}
 			}
+		}
+	}
+
+	/*
+	 * Emits a metadata triple for every class-to-class (or class-to-individual)
+	 * relationship a named class participates in, for ANY object property, derived
+	 * from SubClassOf and EquivalentClasses axioms.
+	 *
+	 * The right-hand side of each axiom is visited (see RelationshipVisitor) so that
+	 * relationships nested inside intersections, and those stated via equivalences,
+	 * are also extracted -- not just the flat shape SubClassOf(A, someValuesFrom(p,
+	 * B)). Each relationship A --p--> filler is emitted under the property's own IRI.
+	 */
+	private void generateRelationshipTriples(Set<OWLAxiom> allAxioms, OWLDataFactory fact, OWLOntology sourceOnt) {
+		for (OWLSubClassOfAxiom sc : sourceOnt.getAxioms(AxiomType.SUBCLASS_OF)) {
+			if (!sc.getSubClass().isAnonymous()) {
+				sc.getSuperClass().accept(new RelationshipVisitor(sc.getSubClass().asOWLClass(), allAxioms, fact));
+			}
+		}
+
+		for (OWLEquivalentClassesAxiom eq : sourceOnt.getAxioms(AxiomType.EQUIVALENT_CLASSES)) {
+			for (OWLClassExpression named : eq.getClassExpressions()) {
+				if (!named.isAnonymous()) {
+					RelationshipVisitor visitor = new RelationshipVisitor(named.asOWLClass(), allAxioms, fact);
+					for (OWLClassExpression other : eq.getClassExpressions()) {
+						if (!other.equals(named)) {
+							other.accept(visitor);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	/*
+	 * Collects the relationships a fixed subject class participates in, by visiting
+	 * the class expression on the right-hand side of a SubClassOf/EquivalentClasses
+	 * axiom. Only intersections are traversed further; the existential shapes
+	 * (someValuesFrom, hasValue, min/exact cardinality >= 1) emit a relationship. The
+	 * filler of those shapes is expanded the same way -- a named filler, or the named
+	 * classes of an intersection filler (see emitRelationshipToClass). Every other
+	 * class-expression type is a no-op (inherited from the adapter), so unions,
+	 * complements and allValuesFrom are, by design, neither traversed nor emitted.
+	 */
+	private class RelationshipVisitor extends OWLClassExpressionVisitorAdapter {
+		private final OWLClass subject;
+		private final Set<OWLAxiom> allAxioms;
+		private final OWLDataFactory fact;
+
+		RelationshipVisitor(OWLClass subject, Set<OWLAxiom> allAxioms, OWLDataFactory fact) {
+			this.subject = subject;
+			this.allAxioms = allAxioms;
+			this.fact = fact;
+		}
+
+		@Override
+		public void visit(OWLObjectIntersectionOf intersection) {
+			for (OWLClassExpression operand : intersection.getOperands()) {
+				operand.accept(this);
+			}
+		}
+
+		@Override
+		public void visit(OWLObjectSomeValuesFrom some) {
+			emitRelationshipToClass(some.getProperty(), some.getFiller());
+		}
+
+		@Override
+		public void visit(OWLObjectHasValue hasValue) {
+			emitRelationshipToIndividual(hasValue.getProperty(), hasValue.getFiller());
+		}
+
+		@Override
+		public void visit(OWLObjectMinCardinality card) {
+			if (card.getCardinality() >= 1) {
+				emitRelationshipToClass(card.getProperty(), card.getFiller());
+			}
+		}
+
+		@Override
+		public void visit(OWLObjectExactCardinality card) {
+			if (card.getCardinality() >= 1) {
+				emitRelationshipToClass(card.getProperty(), card.getFiller());
+			}
+		}
+
+		/*
+		 * Emits subject --p--> C for every named class C in the filler. A named
+		 * filler contributes itself; an intersection filler contributes the named
+		 * classes of its operands (recursively), since `p some (B and C1 ... Cn)`
+		 * entails a relationship to each of B, C1, ... Cn. Anonymous fillers with no
+		 * named class (e.g. a union, or a nested restriction) contribute nothing.
+		 */
+		private void emitRelationshipToClass(OWLObjectPropertyExpression property, OWLClassExpression filler) {
+			if (property.isAnonymous()) {
+				return;
+			}
+			OWLAnnotationProperty prop = fact.getOWLAnnotationProperty(property.asOWLObjectProperty().getIRI());
+			for (OWLClass namedFiller : namedClasses(filler)) {
+				allAxioms.add(fact.getOWLAnnotationAssertionAxiom(prop, subject.getIRI(), namedFiller.getIRI()));
+			}
+		}
+
+		// The named classes reachable through a (possibly nested) intersection.
+		private Set<OWLClass> namedClasses(OWLClassExpression filler) {
+			if (!filler.isAnonymous()) {
+				return Collections.singleton(filler.asOWLClass());
+			}
+			if (filler instanceof OWLObjectIntersectionOf) {
+				Set<OWLClass> result = new HashSet<>();
+				for (OWLClassExpression operand : ((OWLObjectIntersectionOf) filler).getOperands()) {
+					result.addAll(namedClasses(operand));
+				}
+				return result;
+			}
+			return Collections.emptySet();
+		}
+
+		private void emitRelationshipToIndividual(OWLObjectPropertyExpression property, OWLIndividual filler) {
+			if (property.isAnonymous() || filler.isAnonymous()) {
+				return;
+			}
+			OWLAnnotationProperty prop = fact.getOWLAnnotationProperty(property.asOWLObjectProperty().getIRI());
+			allAxioms.add(fact.getOWLAnnotationAssertionAxiom(prop, subject.getIRI(), filler.asOWLNamedIndividual().getIRI()));
 		}
 	}
 
